@@ -1,83 +1,25 @@
-/*** SCHEMA ***/
-import {
-  GraphQLSchema,
-  GraphQLObjectType,
-  GraphQLID,
-  GraphQLString,
-  GraphQLList,
-} from 'graphql';
-const PersonType = new GraphQLObjectType({
-  name: 'Person',
-  fields: {
-    id: { type: GraphQLID },
-    name: { type: GraphQLString },
-  },
-});
-
-const peopleData = [
-  { id: 1, name: 'John Smith' },
-  { id: 2, name: 'Sara Smith' },
-  { id: 3, name: 'Budd Deey' },
-];
-
-const QueryType = new GraphQLObjectType({
-  name: 'Query',
-  fields: {
-    people: {
-      type: new GraphQLList(PersonType),
-      resolve: () => peopleData,
-    },
-  },
-});
-
-const MutationType = new GraphQLObjectType({
-  name: 'Mutation',
-  fields: {
-    addPerson: {
-      type: PersonType,
-      args: {
-        name: { type: GraphQLString },
-      },
-      resolve: function (_, { name }) {
-        const person = {
-          id: peopleData[peopleData.length - 1].id + 1,
-          name,
-        };
-
-        peopleData.push(person);
-        return person;
-      }
-    },
-  },
-});
-
-const schema = new GraphQLSchema({ query: QueryType, mutation: MutationType });
-
 /*** LINK ***/
-import { graphql, print } from "graphql";
-import { ApolloLink, Observable } from "@apollo/client";
-function delay(wait) {
-  return new Promise(resolve => setTimeout(resolve, wait));
-}
+import { HttpLink, split, useSubscription } from "@apollo/client";
+import { getMainDefinition } from '@apollo/client/utilities';
+import { GraphQLWsLink } from '@apollo/client/link/subscriptions';
+import { createClient } from 'graphql-ws';
 
-const link = new ApolloLink(operation => {
-  return new Observable(async observer => {
-    const { query, operationName, variables } = operation;
-    await delay(300);
-    try {
-      const result = await graphql({
-        schema,
-        source: print(query),
-        variableValues: variables,
-        operationName,
-      });
-      observer.next(result);
-      observer.complete();
-    } catch (err) {
-      observer.error(err);
-    }
-  });
+const wsClient = createClient({
+  url: 'ws://localhost:4000/graphql',
 });
+const wsLink = new GraphQLWsLink(wsClient);
+const httpLink = new HttpLink({ uri: 'http://localhost:4000/graphql' });
+const link = split(
+  ({ query }) => {
+    const definition = getMainDefinition(query);
+    return (
+      definition.kind === 'OperationDefinition' &&
+      definition.operation === 'subscription'
+    );
+  },
+  wsLink,
+  httpLink,
+);
 
 /*** APP ***/
 import React, { useState } from "react";
@@ -110,7 +52,24 @@ const ADD_PERSON = gql`
   }
 `;
 
+const NEW_PERSON_SUBSCRIPTION = gql`
+  subscription NewPerson {
+    personAdded {
+      id
+      name
+    }
+  }
+`;
+
+const NewPerson = () => {
+  const { data: newPersonData } = useSubscription(NEW_PERSON_SUBSCRIPTION);
+  return (
+    <p>New: {newPersonData && newPersonData.personAdded.name}</p>
+  )
+}
+
 function App() {
+  const [show, setShow] = useState(true);
   const [name, setName] = useState('');
   const {
     loading,
@@ -167,6 +126,11 @@ function App() {
           ))}
         </ul>
       )}
+      <h2>New Person</h2>
+      <div>
+        {show ? <NewPerson /> : null}
+        <button onClick={() => setShow(!show)}>{show ? 'Hide' : 'Show'}</button>
+      </div>
     </main>
   );
 }
@@ -179,7 +143,9 @@ const client = new ApolloClient({
 const container = document.getElementById("root");
 const root = createRoot(container);
 root.render(
-  <ApolloProvider client={client}>
-    <App />
-  </ApolloProvider>
+  <React.StrictMode>
+    <ApolloProvider client={client}>
+      <App />
+    </ApolloProvider>
+  </React.StrictMode>
 );
